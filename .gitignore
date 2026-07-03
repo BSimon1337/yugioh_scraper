@@ -1,0 +1,4 @@
+images/
+*.sqlite3
+__pycache__/
+debug_konami_detail.html

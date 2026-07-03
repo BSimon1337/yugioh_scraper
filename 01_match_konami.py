@@ -1,11 +1,13 @@
 import json
 import re
 import time
-from urllib.parse import urlencode, urljoin
+from urllib.parse import urlencode
 
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
+
+from db import connect_db, init_db, upsert_card_match
 
 INPUT_JSON = "result.json"
 OUTPUT_CSV = "konami_matches.csv"
@@ -23,7 +25,7 @@ def clean_wiki_name(value):
 
     value = str(value).strip()
 
-    match = re.match(r"\[\[(?:[^|]+\|)?([^\]]+)\]\]", value)
+    match = re.match(r"^\[\[(?:[^|\]]+\|)?(.+?)\]\]$", value)
     if match:
         return match.group(1).strip()
 
@@ -155,6 +157,16 @@ def choose_match(matches):
     }
 
 
+def save_matches_to_db(rows):
+    with connect_db() as connection:
+        init_db(connection)
+
+        for row in rows:
+            upsert_card_match(connection, row)
+
+        connection.commit()
+
+
 def main():
     cards = load_yugipedia_cards(INPUT_JSON)
 
@@ -204,10 +216,12 @@ def main():
 
     df = pd.DataFrame(output_rows)
     df.to_csv(OUTPUT_CSV, index=False, encoding="utf-8-sig")
+    save_matches_to_db(output_rows)
 
     print("Search text:", search_text)
 
     print(f"Saved {OUTPUT_CSV}")
+    print("Saved yugioh_rush.sqlite3")
 
 
 if __name__ == "__main__":
