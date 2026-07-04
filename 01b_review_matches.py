@@ -144,9 +144,17 @@ def get_text(parent, selector):
     return tag.get_text("", strip=True) if tag else ""
 
 
-def fetch_review_rows(connection):
+def fetch_review_rows(connection, statuses=None):
+    where = "match_status != 'MATCHED'"
+    params = []
+
+    if statuses:
+        placeholders = ", ".join("?" for _ in statuses)
+        where = f"match_status IN ({placeholders})"
+        params = list(statuses)
+
     return connection.execute(
-        """
+        f"""
         SELECT page_title,
                english_name,
                japanese_name,
@@ -157,9 +165,10 @@ def fetch_review_rows(connection):
                konami_url,
                notes
         FROM cards
-        WHERE match_status != 'MATCHED'
+        WHERE {where}
         ORDER BY page_title
-        """
+        """,
+        params,
     ).fetchall()
 
 
@@ -347,10 +356,20 @@ def normalize_choice(value, candidates):
     return value
 
 
+def selected_statuses(args):
+    if args.status == "all":
+        return None
+    if args.status == "review":
+        return ["REVIEW_MULTIPLE", "REVIEW"]
+    if args.status == "no-match":
+        return ["NO_MATCH"]
+    raise ValueError(f"Unknown status filter: {args.status}")
+
+
 def run_list(args):
     with connect_db() as connection:
         init_db(connection)
-        print_review_rows(fetch_review_rows(connection))
+        print_review_rows(fetch_review_rows(connection, selected_statuses(args)))
 
 
 def run_candidates(args):
@@ -404,10 +423,10 @@ def run_sync_csv(args):
 def run_interactive(args):
     with connect_db() as connection:
         init_db(connection)
-        rows = fetch_review_rows(connection)
+        rows = fetch_review_rows(connection, selected_statuses(args))
 
         if not rows:
-            print("No review rows found.")
+            print("No matching rows found.")
             return
 
         for row in rows:
@@ -456,7 +475,13 @@ def build_parser():
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    list_parser = subparsers.add_parser("list", help="List rows needing review.")
+    list_parser = subparsers.add_parser("list", help="List non-matched rows.")
+    list_parser.add_argument(
+        "--status",
+        choices=["all", "review", "no-match"],
+        default="all",
+        help="Which rows to list. Defaults to all non-matched rows.",
+    )
     list_parser.set_defaults(func=run_list)
 
     candidates_parser = subparsers.add_parser(
@@ -503,6 +528,12 @@ def build_parser():
         "--details",
         action="store_true",
         help="Also fetch a short printing summary for each candidate.",
+    )
+    interactive_parser.add_argument(
+        "--status",
+        choices=["all", "review", "no-match"],
+        default="all",
+        help="Which rows to review. Defaults to all non-matched rows.",
     )
     interactive_parser.set_defaults(func=run_interactive)
 

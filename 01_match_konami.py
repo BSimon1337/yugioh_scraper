@@ -1,3 +1,4 @@
+import argparse
 import json
 import re
 import time
@@ -115,21 +116,21 @@ def build_konami_search_url(search_text):
     
 
 
-def search_konami(search_text):
+def search_konami(search_text, verbose=False):
     search_url = build_konami_search_url(search_text)
 
     response = requests.get(search_url, headers=HEADERS, timeout=20)
     response.raise_for_status()
 
-    print("HTML length:", len(response.text))
-    print("Contains cid:", "cid=" in response.text)
-    print("Contains card name:", search_text in response.text)
-
     cid_matches = re.findall(r"cid=(\d+)", response.text)
 
-    print("CID matches found:", len(cid_matches))
-    print("First few CIDs:", cid_matches[:10])
-    print("Search text:", search_text)
+    if verbose:
+        print("HTML length:", len(response.text))
+        print("Contains cid:", "cid=" in response.text)
+        print("Contains card name:", search_text in response.text)
+        print("CID matches found:", len(cid_matches))
+        print("First few CIDs:", cid_matches[:10])
+        print("Search text:", search_text)
 
     results = []
 
@@ -167,13 +168,49 @@ def save_matches_to_db(rows):
         connection.commit()
 
 
+def build_parser():
+    parser = argparse.ArgumentParser(
+        description="Match Yugipedia Rush Duel cards to Konami Rush Duel CIDs."
+    )
+    parser.add_argument(
+        "--input",
+        default=INPUT_JSON,
+        help=f"Yugipedia JSON export path. Defaults to {INPUT_JSON}.",
+    )
+    parser.add_argument(
+        "--output",
+        default=OUTPUT_CSV,
+        help=f"Match CSV output path. Defaults to {OUTPUT_CSV}.",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=0,
+        help="Maximum cards to match. Use 0 for all cards. Defaults to 0.",
+    )
+    parser.add_argument(
+        "--delay",
+        type=float,
+        default=1.0,
+        help="Delay between Konami requests in seconds. Defaults to 1.0.",
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print search debug details for each card.",
+    )
+    return parser
+
+
 def main():
-    cards = load_yugipedia_cards(INPUT_JSON)
+    parser = build_parser()
+    args = parser.parse_args()
+
+    cards = load_yugipedia_cards(args.input)
 
     output_rows = []
 
-    # Change this later when testing works
-    cards_to_test = cards[:100]
+    cards_to_test = cards if args.limit == 0 else cards[:args.limit]
 
     for index, card in enumerate(cards_to_test, start=1):
         english_name = card["english_name"]
@@ -184,7 +221,7 @@ def main():
         print(f"[{index}/{len(cards_to_test)}] Searching: {english_name} / {japanese_name}")
 
         try:
-            matches = search_konami(search_text)
+            matches = search_konami(search_text, verbose=args.verbose)
             match_status, chosen = choose_match(matches)
 
             output_rows.append({
@@ -212,15 +249,15 @@ def main():
                 "notes": str(error)
             })
 
-        time.sleep(1)
+        if args.delay > 0:
+            time.sleep(args.delay)
 
     df = pd.DataFrame(output_rows)
-    df.to_csv(OUTPUT_CSV, index=False, encoding="utf-8-sig")
+    df.to_csv(args.output, index=False, encoding="utf-8-sig")
     save_matches_to_db(output_rows)
 
-    print("Search text:", search_text)
-
-    print(f"Saved {OUTPUT_CSV}")
+    print(f"Matched {len(output_rows)} card row(s).")
+    print(f"Saved {args.output}")
     print("Saved yugioh_rush.sqlite3")
 
 

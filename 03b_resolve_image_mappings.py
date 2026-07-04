@@ -170,6 +170,13 @@ def heuristic_ciid(printing, ciids):
     return ciids[0]
 
 
+def heuristic_rule_note(printing):
+    if "ORR" in printing["rarity"].upper():
+        return "confirmed rule: ORR uses highest ciid"
+
+    return "confirmed rule: non-ORR uses lowest ciid"
+
+
 def choose_candidate(printing, candidates):
     matching_cid = [
         candidate for candidate in candidates
@@ -212,10 +219,26 @@ def update_printing_mapping(connection, printing, candidate, notes):
             """,
             (candidate["ciid"], notes, printing["id"]),
         )
-        return
+        return "mapped"
 
     ciids = image_ciids_for_cid(connection, printing["cid"])
     guessed_ciid = heuristic_ciid(printing, ciids)
+
+    if guessed_ciid:
+        connection.execute(
+            """
+            UPDATE printings
+            SET ciid = ?,
+                needs_image_review = 0,
+                image_mapping_source = 'DETAIL_HEURISTIC_CONFIRMED',
+                image_mapping_notes = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (guessed_ciid, f"{heuristic_rule_note(printing)}; {notes}", printing["id"]),
+        )
+        return "confirmed"
+
     connection.execute(
         """
         UPDATE printings
@@ -228,6 +251,7 @@ def update_printing_mapping(connection, printing, candidate, notes):
         """,
         (guessed_ciid, notes, printing["id"]),
     )
+    return "review"
 
 
 def images_by_cid(connection):
@@ -347,6 +371,7 @@ def main():
         printings = fetch_printings_to_map(connection, multi_image_only=not args.all)
         cache = {}
         mapped = 0
+        confirmed = 0
         review = 0
 
         print(f"Resolving {len(printings)} printing row(s).")
@@ -357,10 +382,12 @@ def main():
                 cache[pid] = fetch_pack_candidates(pid)
 
             candidate, notes = choose_candidate(printing, cache[pid])
-            update_printing_mapping(connection, printing, candidate, notes)
+            result = update_printing_mapping(connection, printing, candidate, notes)
 
-            if candidate:
+            if result == "mapped":
                 mapped += 1
+            elif result == "confirmed":
+                confirmed += 1
             else:
                 review += 1
                 print(
@@ -374,7 +401,7 @@ def main():
         if not args.no_sync_csv:
             synced = sync_printings_csv(connection)
 
-    print(f"Mapped {mapped}, review {review}.")
+    print(f"Mapped {mapped}, confirmed {confirmed}, review {review}.")
     if not args.no_sync_csv:
         print(f"Synced {synced} row(s) to {OUTPUT_CSV}.")
 
