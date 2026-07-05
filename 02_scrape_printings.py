@@ -23,6 +23,7 @@ OUTPUT_COLUMNS = [
     "image_count",
     "needs_image_review",
     "setname",
+    "setname_en",
     "rarity",
     "rarity_full",
     "setcode",
@@ -37,6 +38,7 @@ PRINTING_KEY = [
     "konami_cid",
     "cardnumber",
     "setname",
+    "setname_en",
     "rarity",
     "rarity_full",
 ]
@@ -169,6 +171,7 @@ def scrape_printings_for_card(row):
             "image_count": len(all_images),
             "needs_image_review": needs_image_review,
             "setname": setname,
+            "setname_en": "",
             "rarity": rarity,
             "rarity_full": rarity_full,
             "setcode": get_setcode(cardnumber),
@@ -254,8 +257,8 @@ def build_parser():
     parser.add_argument(
         "--limit",
         type=int,
-        default=100,
-        help="Maximum matched cards to scrape. Use 0 for no limit.",
+        default=0,
+        help="Maximum matched cards to scrape. Use 0 for no limit. Defaults to 0.",
     )
     parser.add_argument(
         "--merge-csv",

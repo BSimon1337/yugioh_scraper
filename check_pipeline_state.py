@@ -52,15 +52,27 @@ def build_state(db_path, export_csv, report_csv):
             "matched": scalar(connection, "SELECT COUNT(*) FROM cards WHERE match_status = 'MATCHED'"),
             "no_match": scalar(connection, "SELECT COUNT(*) FROM cards WHERE match_status = 'NO_MATCH'"),
             "unreleased": scalar(connection, "SELECT COUNT(*) FROM cards WHERE match_status = 'UNRELEASED'"),
+            "source_duplicate": scalar(
+                connection,
+                "SELECT COUNT(*) FROM cards WHERE match_status = 'SOURCE_DUPLICATE'",
+            ),
             "needs_match_review": scalar(
                 connection,
-                "SELECT COUNT(*) FROM cards WHERE match_status NOT IN ('MATCHED', 'NO_MATCH', 'UNRELEASED')",
+                """
+                SELECT COUNT(*)
+                FROM cards
+                WHERE match_status NOT IN ('MATCHED', 'NO_MATCH', 'UNRELEASED', 'SOURCE_DUPLICATE')
+                """,
             ),
             "printings": scalar(connection, "SELECT COUNT(*) FROM printings"),
             "images": scalar(connection, "SELECT COUNT(*) FROM images"),
             "needs_image_review": scalar(
                 connection,
                 "SELECT COUNT(*) FROM printings WHERE needs_image_review != 0",
+            ),
+            "missing_english_set_names": scalar(
+                connection,
+                "SELECT COUNT(*) FROM printings WHERE setname_en = ''",
             ),
             "exportable_printings": scalar(
                 connection,
@@ -98,6 +110,7 @@ def build_state(db_path, export_csv, report_csv):
             FROM cards
             WHERE cid IS NOT NULL
               AND cid != ''
+              AND match_status = 'MATCHED'
             GROUP BY cid
             HAVING COUNT(*) > 1
             ORDER BY cid
@@ -142,6 +155,8 @@ def build_state(db_path, export_csv, report_csv):
         state["warnings"].append("Card match review is not finished.")
     if state.get("needs_image_review", 0):
         state["errors"].append("Some printings still need image review.")
+    if state.get("missing_english_set_names", 0):
+        state["errors"].append("Some printings are missing English set names.")
     if state.get("missing_image_joins", 0):
         state["errors"].append("Some reviewed printings do not join to an image row.")
     if state.get("non_ok_images", 0):
@@ -173,10 +188,12 @@ def print_state(state):
     print_count("matched", state["matched"])
     print_count("no_match", state["no_match"])
     print_count("unreleased", state["unreleased"])
+    print_count("source_duplicate", state["source_duplicate"])
     print_count("needs_match_review", state["needs_match_review"])
     print_count("printings", state["printings"])
     print_count("images", state["images"])
     print_count("needs_image_review", state["needs_image_review"])
+    print_count("missing_english_set_names", state["missing_english_set_names"])
     print_count("exportable_printings", state["exportable_printings"])
     print_count("missing_image_joins", state["missing_image_joins"])
     print_count("non_ok_images", state["non_ok_images"])

@@ -114,6 +114,17 @@ def build_parser():
         help=f"Exporter output path. Defaults to {EXPORT_CSV}.",
     )
     parser.add_argument(
+        "--set-name-source",
+        choices=["original", "english"],
+        default="english",
+        help="Use English set names or original scraped set names. Defaults to english.",
+    )
+    parser.add_argument(
+        "--set-name-map",
+        default="set_name_map.csv",
+        help="CSV with setcode,setname,setname_en columns for English set names.",
+    )
+    parser.add_argument(
         "--skip-download",
         action="store_true",
         help="Skip 03_download_images.py.",
@@ -154,12 +165,13 @@ def main():
 
     ensure_no_card_review(args.interactive_review)
 
-    scrape_command = [sys.executable, "02_scrape_printings.py"]
+    scrape_command = [sys.executable, "02_scrape_printings.py", "--limit", "0"]
     if args.scrape_all:
-        scrape_command.extend(["--limit", "0"])
+        pass
     else:
         scrape_command.append("--missing-only")
     run(scrape_command)
+    run([sys.executable, "02b_enrich_set_names.py"])
 
     if not args.skip_download:
         run([sys.executable, "03_download_images.py"])
@@ -174,6 +186,10 @@ def main():
         args.image_source,
         "--output",
         args.output,
+        "--set-name-source",
+        args.set_name_source,
+        "--set-name-map",
+        args.set_name_map,
     ]
     if args.image_source == "cdn":
         export_command.extend(["--cdn-base-url", args.cdn_base_url])

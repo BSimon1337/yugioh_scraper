@@ -65,6 +65,7 @@ Scrape printings, download images, resolve mappings, validate, and export:
 
 ```powershell
 python 02_scrape_printings.py --missing-only
+python 02b_enrich_set_names.py
 python 03_download_images.py
 python 03b_resolve_image_mappings.py --all
 python 04_validate_images.py
@@ -105,6 +106,24 @@ CDN URLs using downloaded image filenames:
 python 05_export_carduploader.py --image-source cdn --cdn-base-url "https://cdn.example.com/rush-images/"
 ```
 
+The exporter uses English set names by default. These are filled automatically from Yugipedia by:
+
+```powershell
+python 02b_enrich_set_names.py
+```
+
+To deliberately export the original Konami/Japanese set names instead:
+
+```powershell
+python 05_export_carduploader.py --set-name-source original
+```
+
+If automatic enrichment misses a set name, the exporter can still use a mapping CSV fallback:
+
+```text
+setcode,setname,setname_en
+```
+
 ## Image Mapping Audit
 
 Export a detailed printing-to-image mapping audit:
@@ -138,6 +157,7 @@ needs_match_review: 0
 needs_image_review: 0
 missing_image_joins: 0
 non_ok_images: 0
+missing_english_set_names: 0
 image_validation_report_rows: 0
 ```
 

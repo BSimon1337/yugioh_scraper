@@ -40,6 +40,7 @@ def init_db(connection):
             cid TEXT NOT NULL,
             cardnumber TEXT NOT NULL DEFAULT '',
             setname TEXT NOT NULL DEFAULT '',
+            setname_en TEXT NOT NULL DEFAULT '',
             rarity TEXT NOT NULL DEFAULT '',
             rarity_full TEXT NOT NULL DEFAULT '',
             setcode TEXT NOT NULL DEFAULT '',
@@ -105,6 +106,7 @@ def init_db(connection):
         connection,
         "printings",
         {
+            "setname_en": "TEXT NOT NULL DEFAULT ''",
             "pid": "TEXT NOT NULL DEFAULT ''",
             "image_mapping_source": "TEXT NOT NULL DEFAULT ''",
             "image_mapping_notes": "TEXT NOT NULL DEFAULT ''",
@@ -211,6 +213,7 @@ def upsert_printing(connection, row):
             cid,
             cardnumber,
             setname,
+            setname_en,
             rarity,
             rarity_full,
             setcode,
@@ -222,8 +225,9 @@ def upsert_printing(connection, row):
             image_mapping_notes,
             source_url
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(cid, cardnumber, setname, rarity, rarity_full) DO UPDATE SET
+            setname_en = COALESCE(NULLIF(excluded.setname_en, ''), printings.setname_en),
             setcode = excluded.setcode,
             release_date = excluded.release_date,
             pid = excluded.pid,
@@ -238,6 +242,7 @@ def upsert_printing(connection, row):
             cid,
             row.get("cardnumber", ""),
             row.get("setname", ""),
+            row.get("setname_en", ""),
             row.get("rarity", ""),
             row.get("rarity_full", ""),
             row.get("setcode", ""),

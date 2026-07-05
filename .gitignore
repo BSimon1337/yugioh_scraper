@@ -10,3 +10,4 @@ konami_printings.csv
 carduploader_export*.csv
 image_mapping_audit.csv
 image_validation_report.csv
+missing_set_name_map.csv

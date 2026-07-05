@@ -146,7 +146,7 @@ def get_text(parent, selector):
 
 
 def fetch_review_rows(connection, statuses=None):
-    where = "match_status NOT IN ('MATCHED', 'UNRELEASED')"
+    where = "match_status NOT IN ('MATCHED', 'UNRELEASED', 'SOURCE_DUPLICATE')"
     params = []
 
     if statuses:
@@ -410,6 +410,8 @@ def selected_statuses(args):
         return ["NO_MATCH"]
     if args.status == "unreleased":
         return ["UNRELEASED"]
+    if args.status == "source-duplicate":
+        return ["SOURCE_DUPLICATE"]
     raise ValueError(f"Unknown status filter: {args.status}")
 
 
@@ -462,6 +464,27 @@ def run_no_match(args):
         update_card(connection, args.page_title, "", "NO_MATCH", "", notes)
 
     print(f"Updated {args.page_title}: NO_MATCH")
+
+
+def run_source_duplicate(args):
+    notes = args.notes or "manual review: source duplicate"
+
+    with connect_db() as connection:
+        init_db(connection)
+        row = fetch_card(connection, args.page_title)
+        if not row:
+            raise SystemExit(f"No card found for page title: {args.page_title}")
+
+        update_card(
+            connection,
+            args.page_title,
+            row["cid"] or "",
+            "SOURCE_DUPLICATE",
+            row["konami_name"],
+            notes,
+        )
+
+    print(f"Updated {args.page_title}: SOURCE_DUPLICATE")
 
 
 def run_sync_csv(args):
@@ -536,7 +559,7 @@ def build_parser():
     list_parser = subparsers.add_parser("list", help="List non-matched rows.")
     list_parser.add_argument(
         "--status",
-        choices=["all", "review", "no-match", "unreleased"],
+        choices=["all", "review", "no-match", "unreleased", "source-duplicate"],
         default="all",
         help="Which rows to list. Defaults to all non-matched rows.",
     )
@@ -572,6 +595,14 @@ def build_parser():
     no_match_parser.add_argument("--notes", default="", help="Override review note.")
     no_match_parser.set_defaults(func=run_no_match)
 
+    source_duplicate_parser = subparsers.add_parser(
+        "source-duplicate",
+        help="Mark one page title as a source duplicate/alias of an existing matched CID.",
+    )
+    source_duplicate_parser.add_argument("page_title")
+    source_duplicate_parser.add_argument("--notes", default="", help="Override review note.")
+    source_duplicate_parser.set_defaults(func=run_source_duplicate)
+
     sync_parser = subparsers.add_parser(
         "sync-csv",
         help="Rewrite review fields in konami_matches.csv from SQLite.",
@@ -589,7 +620,7 @@ def build_parser():
     )
     interactive_parser.add_argument(
         "--status",
-        choices=["all", "review", "no-match", "unreleased"],
+        choices=["all", "review", "no-match", "unreleased", "source-duplicate"],
         default="all",
         help="Which rows to review. Defaults to all non-matched rows.",
     )

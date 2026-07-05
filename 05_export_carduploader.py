@@ -6,6 +6,8 @@ from urllib.parse import quote
 from db import DB_PATH, connect_db, image_path, init_db
 
 OUTPUT_CSV = "carduploader_export.csv"
+SET_NAME_MAP_CSV = "set_name_map.csv"
+MISSING_SET_NAME_MAP_CSV = "missing_set_name_map.csv"
 
 OUTPUT_COLUMNS = [
     "cardname",
@@ -61,6 +63,58 @@ def image_url_for_row(row, image_source, cdn_base_url):
     raise ValueError(f"Unknown image source: {image_source}")
 
 
+def set_key(row):
+    return row["setcode"], row["setname"]
+
+
+def read_set_name_map(path):
+    path = Path(path)
+    if not path.exists():
+        return {}
+
+    with path.open("r", encoding="utf-8-sig", newline="") as file:
+        rows = csv.DictReader(file)
+        mapping = {}
+        for row in rows:
+            setcode = (row.get("setcode") or "").strip()
+            setname = (row.get("setname") or "").strip()
+            setname_en = (row.get("setname_en") or "").strip()
+            if setcode and setname and setname_en:
+                mapping[(setcode, setname)] = setname_en
+
+    return mapping
+
+
+def write_missing_set_name_map(path, rows):
+    unique_sets = {}
+    for row in rows:
+        unique_sets.setdefault(set_key(row), row)
+
+    with open(path, "w", encoding="utf-8-sig", newline="") as file:
+        writer = csv.DictWriter(file, fieldnames=["setcode", "setname", "setname_en"])
+        writer.writeheader()
+        for key in sorted(unique_sets):
+            setcode, setname = key
+            writer.writerow({
+                "setcode": setcode,
+                "setname": setname,
+                "setname_en": "",
+            })
+
+
+def set_name_for_row(row, set_name_source, set_name_map):
+    if set_name_source == "original":
+        return row["setname"]
+
+    if set_name_source == "english":
+        if row["setname_en"]:
+            return row["setname_en"]
+
+        return set_name_map.get(set_key(row), "")
+
+    raise ValueError(f"Unknown set name source: {set_name_source}")
+
+
 def fetch_export_rows(connection):
     return connection.execute(
         """
@@ -72,9 +126,11 @@ def fetch_export_rows(connection):
               AND cid != ''
             GROUP BY cid
         )
-        SELECT p.cid,
+        SELECT p.id,
+               p.cid,
                p.cardnumber,
                p.setname,
+               p.setname_en,
                p.rarity,
                p.setcode,
                p.ciid,
@@ -91,9 +147,59 @@ def fetch_export_rows(connection):
     ).fetchall()
 
 
-def build_output_rows(rows, image_source, cdn_base_url):
+def missing_set_name_rows(rows, set_name_map):
+    missing = []
+    seen = set()
+    for row in rows:
+        key = set_key(row)
+        if row["setname_en"] or key in set_name_map or key in seen:
+            continue
+
+        seen.add(key)
+        missing.append(row)
+
+    return missing
+
+
+def disambiguated_set_names(rows, set_name_source, set_name_map):
+    set_names = {}
+    grouped = {}
+
+    for row in rows:
+        setname = set_name_for_row(row, set_name_source, set_name_map)
+        set_names[row["id"]] = setname
+        key = (
+            row["cardname"],
+            row["cardnumber"],
+            setname,
+            row["rarity"],
+            row["setcode"],
+        )
+        grouped.setdefault(key, set()).add(row["setname"])
+
+    ambiguous_keys = {
+        key for key, original_setnames in grouped.items()
+        if len(original_setnames) > 1
+    }
+
+    for row in rows:
+        key = (
+            row["cardname"],
+            row["cardnumber"],
+            set_names[row["id"]],
+            row["rarity"],
+            row["setcode"],
+        )
+        if key in ambiguous_keys:
+            set_names[row["id"]] = f"{set_names[row['id']]} ({row['setname']})"
+
+    return set_names
+
+
+def build_output_rows(rows, image_source, cdn_base_url, set_name_source, set_name_map):
     output_rows = []
     missing_image_mappings = []
+    set_names = disambiguated_set_names(rows, set_name_source, set_name_map)
 
     for row in rows:
         if not row["ciid"] or row["image_url"] is None:
@@ -106,7 +212,7 @@ def build_output_rows(rows, image_source, cdn_base_url):
             "cardname": row["cardname"],
             "cardnumber": row["cardnumber"],
             "imageurl": image_url_for_row(row, image_source, cdn_base_url),
-            "setname": row["setname"],
+            "setname": set_names[row["id"]],
             "rarity": row["rarity"],
             "setcode": row["setcode"],
         })
@@ -154,6 +260,22 @@ def build_parser():
         default="",
         help="Base URL for --image-source cdn, for example https://cdn.example.com/rush-images/.",
     )
+    parser.add_argument(
+        "--set-name-source",
+        choices=["original", "english"],
+        default="english",
+        help="Use English set names from SQLite/map or original scraped set names. Defaults to english.",
+    )
+    parser.add_argument(
+        "--set-name-map",
+        default=SET_NAME_MAP_CSV,
+        help=f"CSV with setcode,setname,setname_en columns. Defaults to {SET_NAME_MAP_CSV}.",
+    )
+    parser.add_argument(
+        "--missing-set-name-map",
+        default=MISSING_SET_NAME_MAP_CSV,
+        help=f"Template CSV written when English set mappings are missing. Defaults to {MISSING_SET_NAME_MAP_CSV}.",
+    )
     return parser
 
 
@@ -174,7 +296,23 @@ def main():
     with connect_db(args.db) as connection:
         init_db(connection)
         rows = fetch_export_rows(connection)
-        output_rows = build_output_rows(rows, args.image_source, cdn_base_url)
+        set_name_map = read_set_name_map(args.set_name_map)
+        if args.set_name_source == "english":
+            missing_set_rows = missing_set_name_rows(rows, set_name_map)
+            if missing_set_rows:
+                write_missing_set_name_map(args.missing_set_name_map, missing_set_rows)
+                parser.error(
+                    f"{len(missing_set_rows)} set name mapping(s) are missing. "
+                    f"Fill {args.missing_set_name_map}, save it as {args.set_name_map}, and rerun."
+                )
+
+        output_rows = build_output_rows(
+            rows,
+            args.image_source,
+            cdn_base_url,
+            args.set_name_source,
+            set_name_map,
+        )
 
     write_csv(args.output, output_rows)
 
