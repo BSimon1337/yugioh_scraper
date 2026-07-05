@@ -3,7 +3,7 @@ import csv
 import re
 import sys
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode, urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -23,6 +23,7 @@ CSV_FIELDS = [
     "english_name",
     "japanese_name",
     "search_text",
+    "source_status",
     "match_status",
     "konami_cid",
     "konami_name",
@@ -145,7 +146,7 @@ def get_text(parent, selector):
 
 
 def fetch_review_rows(connection, statuses=None):
-    where = "match_status != 'MATCHED'"
+    where = "match_status NOT IN ('MATCHED', 'UNRELEASED')"
     params = []
 
     if statuses:
@@ -159,6 +160,7 @@ def fetch_review_rows(connection, statuses=None):
                english_name,
                japanese_name,
                search_text,
+               source_status,
                match_status,
                cid,
                konami_name,
@@ -179,6 +181,7 @@ def fetch_card(connection, page_title):
                english_name,
                japanese_name,
                search_text,
+               source_status,
                match_status,
                cid,
                konami_name,
@@ -196,6 +199,7 @@ def fetch_all_cards(connection):
         """
         SELECT page_title,
                cid,
+               source_status,
                match_status,
                konami_name,
                konami_url,
@@ -204,6 +208,30 @@ def fetch_all_cards(connection):
         ORDER BY page_title
         """
     ).fetchall()
+
+
+def fetch_known_names_by_cid(connection):
+    rows = connection.execute(
+        """
+        SELECT cid,
+               english_name,
+               page_title
+        FROM cards
+        WHERE cid IS NOT NULL
+          AND cid != ''
+        ORDER BY english_name, page_title
+        """
+    ).fetchall()
+
+    names_by_cid = {}
+    for row in rows:
+        name = row["english_name"] or row["page_title"]
+        if name:
+            names_by_cid.setdefault(row["cid"], [])
+            if name not in names_by_cid[row["cid"]]:
+                names_by_cid[row["cid"]].append(name)
+
+    return names_by_cid
 
 
 def update_card(connection, page_title, cid, status, konami_name, notes):
@@ -245,6 +273,7 @@ def sync_csv_from_db(connection):
 
         row["match_status"] = card["match_status"]
         row["konami_cid"] = card["cid"] or ""
+        row["source_status"] = card["source_status"]
         row["konami_name"] = card["konami_name"]
         row["konami_url"] = card["konami_url"]
         row["notes"] = card["notes"]
@@ -273,6 +302,7 @@ def sync_csv_row(page_title, cid, status, konami_name, konami_url, notes):
 
         row["match_status"] = status
         row["konami_cid"] = cid or ""
+        row.setdefault("source_status", "")
         row["konami_name"] = konami_name
         row["konami_url"] = konami_url
         row["notes"] = notes
@@ -293,6 +323,11 @@ def infer_name_from_candidates(cid, candidates):
         if candidate["cid"] == cid:
             return candidate["name"]
 
+    try:
+        return fetch_detail_summary(cid)["name"]
+    except Exception:
+        pass
+
     return ""
 
 
@@ -309,7 +344,9 @@ def print_review_rows(rows):
         )
 
 
-def print_candidates(row, include_details=False):
+def print_candidates(row, include_details=False, known_names_by_cid=None):
+    known_names_by_cid = known_names_by_cid or {}
+
     print(f"{row['page_title']}")
     print(f"  English:  {row['english_name']}")
     print(f"  Japanese: {row['japanese_name']}")
@@ -324,6 +361,9 @@ def print_candidates(row, include_details=False):
 
     for index, candidate in enumerate(candidates, start=1):
         print(f"{index}. cid {candidate['cid']} | {candidate['name']}")
+        known_names = known_names_by_cid.get(candidate["cid"], [])
+        if known_names:
+            print(f"   english: {' | '.join(known_names)}")
         if candidate["ruby"]:
             print(f"   ruby: {candidate['ruby']}")
         print(f"   url:  {candidate['url']}")
@@ -348,6 +388,11 @@ def normalize_choice(value, candidates):
     if not value:
         return ""
 
+    parsed = urlparse(value)
+    query_cid = parse_qs(parsed.query).get("cid", [""])[0].strip()
+    if query_cid:
+        return query_cid
+
     if re.fullmatch(r"\d+", value):
         numeric = int(value)
         if 1 <= numeric <= len(candidates):
@@ -363,6 +408,8 @@ def selected_statuses(args):
         return ["REVIEW_MULTIPLE", "REVIEW"]
     if args.status == "no-match":
         return ["NO_MATCH"]
+    if args.status == "unreleased":
+        return ["UNRELEASED"]
     raise ValueError(f"Unknown status filter: {args.status}")
 
 
@@ -376,11 +423,12 @@ def run_candidates(args):
     with connect_db() as connection:
         init_db(connection)
         row = fetch_card(connection, args.page_title)
+        known_names_by_cid = fetch_known_names_by_cid(connection)
 
     if not row:
         raise SystemExit(f"No card found for page title: {args.page_title}")
 
-    print_candidates(row, include_details=args.details)
+    print_candidates(row, include_details=args.details, known_names_by_cid=known_names_by_cid)
 
 
 def run_set(args):
@@ -391,11 +439,15 @@ def run_set(args):
             raise SystemExit(f"No card found for page title: {args.page_title}")
 
         candidates = fetch_search_candidates(row["search_text"])
-        konami_name = args.name or infer_name_from_candidates(args.cid, candidates)
-        notes = args.notes or "manual review"
-        update_card(connection, args.page_title, args.cid, "MATCHED", konami_name, notes)
+        cid = normalize_choice(args.cid, candidates)
+        if not re.fullmatch(r"\d+", cid):
+            raise SystemExit(f"Invalid CID or Konami URL: {args.cid}")
 
-    print(f"Updated {args.page_title}: MATCHED cid {args.cid}")
+        konami_name = args.name or infer_name_from_candidates(cid, candidates)
+        notes = args.notes or "manual review"
+        update_card(connection, args.page_title, cid, "MATCHED", konami_name, notes)
+
+    print(f"Updated {args.page_title}: MATCHED cid {cid}")
 
 
 def run_no_match(args):
@@ -424,6 +476,7 @@ def run_interactive(args):
     with connect_db() as connection:
         init_db(connection)
         rows = fetch_review_rows(connection, selected_statuses(args))
+        known_names_by_cid = fetch_known_names_by_cid(connection)
 
         if not rows:
             print("No matching rows found.")
@@ -431,16 +484,21 @@ def run_interactive(args):
 
         for row in rows:
             print()
-            candidates = print_candidates(row, include_details=args.details)
+            candidates = print_candidates(
+                row,
+                include_details=args.details,
+                known_names_by_cid=known_names_by_cid,
+            )
             print()
-            choice = input("Choose candidate number/CID, n = NO_MATCH, s = skip, q = quit: ")
-            choice = choice.strip().lower()
+            choice = input("Choose candidate number/CID/URL, n = NO_MATCH, s = skip, q = quit: ")
+            choice = choice.strip()
+            command_choice = choice.lower()
 
-            if choice == "q":
+            if command_choice == "q":
                 break
-            if choice == "s" or not choice:
+            if command_choice == "s" or not choice:
                 continue
-            if choice == "n":
+            if command_choice == "n":
                 update_card(
                     connection,
                     row["page_title"],
@@ -478,7 +536,7 @@ def build_parser():
     list_parser = subparsers.add_parser("list", help="List non-matched rows.")
     list_parser.add_argument(
         "--status",
-        choices=["all", "review", "no-match"],
+        choices=["all", "review", "no-match", "unreleased"],
         default="all",
         help="Which rows to list. Defaults to all non-matched rows.",
     )
@@ -531,7 +589,7 @@ def build_parser():
     )
     interactive_parser.add_argument(
         "--status",
-        choices=["all", "review", "no-match"],
+        choices=["all", "review", "no-match", "unreleased"],
         default="all",
         help="Which rows to review. Defaults to all non-matched rows.",
     )

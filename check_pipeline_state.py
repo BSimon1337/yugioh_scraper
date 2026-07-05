@@ -51,9 +51,10 @@ def build_state(db_path, export_csv, report_csv):
             "cards": scalar(connection, "SELECT COUNT(*) FROM cards"),
             "matched": scalar(connection, "SELECT COUNT(*) FROM cards WHERE match_status = 'MATCHED'"),
             "no_match": scalar(connection, "SELECT COUNT(*) FROM cards WHERE match_status = 'NO_MATCH'"),
+            "unreleased": scalar(connection, "SELECT COUNT(*) FROM cards WHERE match_status = 'UNRELEASED'"),
             "needs_match_review": scalar(
                 connection,
-                "SELECT COUNT(*) FROM cards WHERE match_status NOT IN ('MATCHED', 'NO_MATCH')",
+                "SELECT COUNT(*) FROM cards WHERE match_status NOT IN ('MATCHED', 'NO_MATCH', 'UNRELEASED')",
             ),
             "printings": scalar(connection, "SELECT COUNT(*) FROM printings"),
             "images": scalar(connection, "SELECT COUNT(*) FROM images"),
@@ -171,6 +172,7 @@ def print_state(state):
     print_count("cards", state["cards"])
     print_count("matched", state["matched"])
     print_count("no_match", state["no_match"])
+    print_count("unreleased", state["unreleased"])
     print_count("needs_match_review", state["needs_match_review"])
     print_count("printings", state["printings"])
     print_count("images", state["images"])

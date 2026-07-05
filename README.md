@@ -30,12 +30,35 @@ Run card matching when using a new source JSON:
 python 01_match_konami.py --input result.json --output konami_matches.csv
 ```
 
+Cards whose Yugipedia `Status` is `Not yet released` are marked `UNRELEASED` and skipped by default. To include them anyway:
+
+```powershell
+python 01_match_konami.py --input result.json --include-unreleased
+```
+
 Review any unresolved or ambiguous card matches:
 
 ```powershell
 python 01b_review_matches.py list --status all
 python 01b_review_matches.py interactive --status all --details
 python 01b_review_matches.py sync-csv
+```
+
+To inspect unreleased skipped cards:
+
+```powershell
+python 01b_review_matches.py list --status unreleased
+```
+
+Interactive review controls:
+
+```text
+candidate number = choose that candidate
+CID              = mark matched with that Konami CID
+Konami URL       = mark matched with the cid in the URL
+n                = mark as NO_MATCH
+s or blank       = skip for now
+q                = quit review
 ```
 
 Scrape printings, download images, resolve mappings, validate, and export:

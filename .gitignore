@@ -2,3 +2,11 @@ images/
 *.sqlite3
 __pycache__/
 debug_konami_detail.html
+
+# Source exports and generated pipeline outputs
+result*.json
+konami_matches.csv
+konami_printings.csv
+carduploader_export*.csv
+image_mapping_audit.csv
+image_validation_report.csv

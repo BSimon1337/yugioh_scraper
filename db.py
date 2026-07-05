@@ -21,6 +21,7 @@ def init_db(connection):
             english_name TEXT NOT NULL DEFAULT '',
             japanese_name TEXT NOT NULL DEFAULT '',
             search_text TEXT NOT NULL DEFAULT '',
+            source_status TEXT NOT NULL DEFAULT '',
             match_status TEXT NOT NULL,
             konami_name TEXT NOT NULL DEFAULT '',
             konami_url TEXT NOT NULL DEFAULT '',
@@ -95,6 +96,13 @@ def init_db(connection):
     )
     ensure_columns(
         connection,
+        "cards",
+        {
+            "source_status": "TEXT NOT NULL DEFAULT ''",
+        },
+    )
+    ensure_columns(
+        connection,
         "printings",
         {
             "pid": "TEXT NOT NULL DEFAULT ''",
@@ -132,17 +140,19 @@ def upsert_card_match(connection, row):
             english_name,
             japanese_name,
             search_text,
+            source_status,
             match_status,
             konami_name,
             konami_url,
             notes
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(page_title) DO UPDATE SET
             cid = excluded.cid,
             english_name = excluded.english_name,
             japanese_name = excluded.japanese_name,
             search_text = excluded.search_text,
+            source_status = excluded.source_status,
             match_status = excluded.match_status,
             konami_name = excluded.konami_name,
             konami_url = excluded.konami_url,
@@ -155,6 +165,7 @@ def upsert_card_match(connection, row):
             row.get("english_name", ""),
             row.get("japanese_name", ""),
             row.get("search_text", ""),
+            row.get("source_status", ""),
             row.get("match_status", ""),
             row.get("konami_name", ""),
             row.get("konami_url", ""),
