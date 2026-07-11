@@ -24,6 +24,7 @@ CSV_FIELDS = [
     "japanese_name",
     "search_text",
     "source_status",
+    "source_file",
     "match_status",
     "konami_cid",
     "konami_name",
@@ -200,6 +201,7 @@ def fetch_all_cards(connection):
         SELECT page_title,
                cid,
                source_status,
+               source_file,
                match_status,
                konami_name,
                konami_url,
@@ -274,6 +276,7 @@ def sync_csv_from_db(connection):
         row["match_status"] = card["match_status"]
         row["konami_cid"] = card["cid"] or ""
         row["source_status"] = card["source_status"]
+        row["source_file"] = card["source_file"]
         row["konami_name"] = card["konami_name"]
         row["konami_url"] = card["konami_url"]
         row["notes"] = card["notes"]
@@ -303,6 +306,7 @@ def sync_csv_row(page_title, cid, status, konami_name, konami_url, notes):
         row["match_status"] = status
         row["konami_cid"] = cid or ""
         row.setdefault("source_status", "")
+        row.setdefault("source_file", "")
         row["konami_name"] = konami_name
         row["konami_url"] = konami_url
         row["notes"] = notes

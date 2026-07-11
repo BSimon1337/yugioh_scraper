@@ -161,6 +161,7 @@ def main():
             str(args.match_limit),
             "--delay",
             str(args.match_delay),
+            "--merge-csv",
         ])
 
     ensure_no_card_review(args.interactive_review)

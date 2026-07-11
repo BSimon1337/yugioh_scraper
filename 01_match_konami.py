@@ -1,11 +1,12 @@
-import argparse
+﻿import argparse
+import csv
 import json
 import re
 import sys
 import time
+from pathlib import Path
 from urllib.parse import urlencode
 
-import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 
@@ -222,6 +223,48 @@ def save_matches_to_db(rows):
         connection.commit()
 
 
+OUTPUT_COLUMNS = [
+    "page_title",
+    "english_name",
+    "japanese_name",
+    "search_text",
+    "source_status",
+    "source_file",
+    "match_status",
+    "konami_cid",
+    "konami_name",
+    "konami_url",
+    "notes",
+]
+
+
+def write_matches_csv(path, rows, merge_existing):
+    path = Path(path)
+    merged_rows = []
+
+    if merge_existing and path.exists():
+        with path.open("r", encoding="utf-8-sig", newline="") as file:
+            merged_rows.extend(csv.DictReader(file))
+
+    rows_by_title = {row.get("page_title", ""): row for row in merged_rows}
+    for row in rows:
+        rows_by_title[row["page_title"]] = row
+
+    output_rows = [
+        {field: row.get(field, "") for field in OUTPUT_COLUMNS}
+        for row in rows_by_title.values()
+        if row.get("page_title")
+    ]
+    output_rows.sort(key=lambda row: row["page_title"])
+
+    with path.open("w", encoding="utf-8-sig", newline="") as file:
+        writer = csv.DictWriter(file, fieldnames=OUTPUT_COLUMNS)
+        writer.writeheader()
+        writer.writerows(output_rows)
+
+    return len(output_rows)
+
+
 def build_parser():
     parser = argparse.ArgumentParser(
         description="Match Yugipedia Rush Duel cards to Konami Rush Duel CIDs."
@@ -258,6 +301,11 @@ def build_parser():
         action="store_true",
         help="Also search cards whose Yugipedia Status is 'Not yet released'.",
     )
+    parser.add_argument(
+        "--merge-csv",
+        action="store_true",
+        help="Merge rows into the existing match CSV instead of replacing it.",
+    )
     return parser
 
 
@@ -265,7 +313,9 @@ def main():
     parser = build_parser()
     args = parser.parse_args()
 
-    cards = load_yugipedia_cards(args.input)
+    input_path = Path(args.input)
+    source_file = str(input_path)
+    cards = load_yugipedia_cards(input_path)
 
     output_rows = []
 
@@ -289,6 +339,7 @@ def main():
                 "japanese_name": japanese_name,
                 "search_text": search_text,
                 "source_status": source_status,
+                "source_file": source_file,
                 "match_status": "UNRELEASED",
                 "konami_cid": "",
                 "konami_name": "",
@@ -312,6 +363,7 @@ def main():
                 "japanese_name": japanese_name,
                 "search_text": search_text,
                 "source_status": source_status,
+                "source_file": source_file,
                 "match_status": match_status,
                 "konami_cid": chosen["cid"],
                 "konami_name": chosen["konami_name"],
@@ -326,6 +378,7 @@ def main():
                 "japanese_name": japanese_name,
                 "search_text": search_text,
                 "source_status": source_status,
+                "source_file": source_file,
                 "match_status": "ERROR",
                 "konami_cid": "",
                 "konami_name": "",
@@ -336,14 +389,14 @@ def main():
         if args.delay > 0:
             time.sleep(args.delay)
 
-    df = pd.DataFrame(output_rows)
-    df.to_csv(args.output, index=False, encoding="utf-8-sig")
+    csv_rows = write_matches_csv(args.output, output_rows, merge_existing=args.merge_csv)
     save_matches_to_db(output_rows)
 
     print(f"Matched {len(output_rows)} card row(s).")
-    print(f"Saved {args.output}")
+    print(f"Saved {csv_rows} row(s) to {args.output}")
     print("Saved yugioh_rush.sqlite3")
 
 
 if __name__ == "__main__":
     main()
+

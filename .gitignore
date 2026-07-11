@@ -2,6 +2,7 @@ images/
 *.sqlite3
 __pycache__/
 debug_konami_detail.html
+batches/
 
 # Source exports and generated pipeline outputs
 result*.json

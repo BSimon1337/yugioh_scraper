@@ -16,6 +16,12 @@ Repeated card names are expected when a card has multiple printings, rarities, o
 pip install -r requirements.txt
 ```
 
+Launch the optional local UI:
+
+```powershell
+streamlit run streamlit_app.py
+```
+
 Put the Yugipedia JSON export at:
 
 ```text
@@ -27,7 +33,7 @@ result.json
 Run card matching when using a new source JSON:
 
 ```powershell
-python 01_match_konami.py --input result.json --output konami_matches.csv
+python 01_match_konami.py --input result.json --output konami_matches.csv --merge-csv
 ```
 
 Cards whose Yugipedia `Status` is `Not yet released` are marked `UNRELEASED` and skipped by default. To include them anyway:
@@ -85,6 +91,26 @@ python run_pipeline.py --run-match --interactive-review --from-json result.json
 ```
 
 If review rows remain after the interactive pass, the runner stops before scraping printings.
+
+## Multiple JSON Batches
+
+SQLite is the source of truth and accumulates batches through upserts. To process multiple 500-card exports, run each batch through the same project folder:
+
+```powershell
+python run_pipeline.py --run-match --interactive-review --from-json "C:\path\to\batch_001.json"
+python run_pipeline.py --run-match --interactive-review --from-json "C:\path\to\batch_002.json"
+python run_pipeline.py --run-match --interactive-review --from-json "C:\path\to\batch_003.json"
+```
+
+The runner passes `--merge-csv` to `01_match_konami.py`, so `konami_matches.csv` keeps accumulating reviewed match rows instead of only showing the latest batch. Each card row also records `source_file`.
+
+Do not manually merge card uploader CSVs. After all batches are processed, run:
+
+```powershell
+python run_pipeline.py
+```
+
+Then use the single regenerated `carduploader_export.csv`.
 
 ## Export Modes
 
