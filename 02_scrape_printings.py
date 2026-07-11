@@ -279,8 +279,9 @@ def main():
 
     all_rows = []
 
-    for index, row in matched_cards.iterrows():
-        print(f"Scraping CID {row['konami_cid']}: {row['english_name']}")
+    total = len(matched_cards)
+    for position, (_, row) in enumerate(matched_cards.iterrows(), start=1):
+        print(f"[{position}/{total}] Scraping CID {row['konami_cid']}: {row['english_name']}")
 
         try:
             printings, images = scrape_printings_for_card(row)

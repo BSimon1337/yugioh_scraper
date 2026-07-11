@@ -26,15 +26,29 @@ st.set_page_config(
 )
 
 
-def command_box(command, timeout=None):
-    with st.status("Running command...", expanded=True) as status:
+def unbuffered_python_command(command):
+    if not command:
+        return command
+    executable = Path(command[0]).name.lower()
+    if executable.startswith("python") and "-u" not in command[1:2]:
+        return [command[0], "-u", *command[1:]]
+    return command
+
+
+def command_box(command, timeout=None, title="Running command...", transcript_key=None):
+    command = unbuffered_python_command(command)
+    output_lines = []
+    code = None
+
+    with st.status(title, expanded=True) as status:
         st.code(" ".join(command), language="powershell")
         latest_placeholder = st.empty()
+        state_placeholder = st.empty()
         progress_bar = st.progress(0, text="Waiting for output...")
         log_placeholder = st.empty()
         progress_placeholder = st.empty()
-        output_lines = []
         started_at = time.monotonic()
+        last_state_at = 0
 
         process = subprocess.Popen(
             command,
@@ -49,6 +63,13 @@ def command_box(command, timeout=None):
         while process.poll() is None:
             if timeout and time.monotonic() - started_at > timeout:
                 process.kill()
+                code = 124
+                if transcript_key:
+                    st.session_state[transcript_key] = {
+                        "command": command,
+                        "code": code,
+                        "lines": output_lines,
+                    }
                 status.update(label="Command timed out", state="error")
                 return 124
 
@@ -70,6 +91,22 @@ def command_box(command, timeout=None):
                         text=f"{current}/{total}",
                     )
 
+            if transcript_key == "pipeline_console" and time.monotonic() - last_state_at >= 5:
+                last_state_at = time.monotonic()
+                try:
+                    current_state = state_summary()
+                    if "cards" in current_state:
+                        state_placeholder.caption(
+                            "Live state: "
+                            f"cards {current_state.get('cards', 0)} | "
+                            f"matched {current_state.get('matched', 0)} | "
+                            f"printings {current_state.get('printings', 0)} | "
+                            f"images {current_state.get('images', 0)} | "
+                            f"export rows {current_state.get('export_rows', 0)}"
+                        )
+                except Exception as error:
+                    state_placeholder.caption(f"Live state unavailable: {error}")
+
             if not line:
                 time.sleep(0.1)
 
@@ -81,6 +118,13 @@ def command_box(command, timeout=None):
             log_placeholder.code("\n".join(output_lines[-120:]), language="text")
 
         code = process.returncode
+        if transcript_key:
+            st.session_state[transcript_key] = {
+                "command": command,
+                "code": code,
+                "lines": output_lines,
+            }
+
         if code == 0:
             progress_bar.progress(1.0, text="Done")
             status.update(label="Command finished", state="complete")
@@ -88,6 +132,25 @@ def command_box(command, timeout=None):
             status.update(label=f"Command failed with exit code {code}", state="error")
 
     return code
+
+
+def render_saved_command_output(transcript_key):
+    transcript = st.session_state.get(transcript_key)
+    if not transcript:
+        st.caption("Run a command to see live output here.")
+        return
+
+    command = transcript.get("command", [])
+    code = transcript.get("code")
+    lines = transcript.get("lines", [])
+
+    status = "finished" if code == 0 else f"exited with code {code}"
+    st.caption(f"Last command {status}")
+    st.code(" ".join(command), language="powershell")
+    if lines:
+        st.code("\n".join(lines[-200:]), language="text")
+    else:
+        st.caption("No output was captured.")
 
 
 def db_exists():
@@ -286,6 +349,8 @@ def candidate_rows(row):
 
 def render_dashboard_tab():
     st.subheader("Pipeline Health")
+    if st.button("Refresh Pipeline Health"):
+        st.rerun()
     render_health()
 
     st.subheader("Quick Actions")
@@ -390,20 +455,28 @@ def render_review_tab():
 
     st.divider()
     st.write("Apply Review Decision")
-    cid_or_url = st.text_input("CID or Konami URL")
-    notes = st.text_input("Notes", value="manual review")
+    if st.session_state.get("clear_review_inputs"):
+        st.session_state["review_cid_or_url"] = ""
+        st.session_state["review_notes"] = "manual review"
+        st.session_state["clear_review_inputs"] = False
+
+    cid_or_url = st.text_input("CID or Konami URL", key="review_cid_or_url")
+    notes = st.text_input("Notes", value="manual review", key="review_notes")
     col1, col2, col3 = st.columns(3)
     if col1.button("Match", type="primary", use_container_width=True):
         if not cid_or_url.strip():
             st.warning("Enter a CID or Konami URL.")
         else:
             apply_review_action(row["page_title"], "match", cid_or_url=cid_or_url.strip(), notes=notes)
+            st.session_state["clear_review_inputs"] = True
             st.rerun()
     if col2.button("No Match", use_container_width=True):
         apply_review_action(row["page_title"], "no-match", notes=notes)
+        st.session_state["clear_review_inputs"] = True
         st.rerun()
     if col3.button("Source Duplicate", use_container_width=True):
         apply_review_action(row["page_title"], "source-duplicate", notes=notes)
+        st.session_state["clear_review_inputs"] = True
         st.rerun()
 
 
@@ -435,8 +508,12 @@ def render_pipeline_tab():
         if image_source == "cdn" and not cdn_base_url.strip():
             st.warning("CDN base URL is required for CDN mode.")
         else:
-            command_box(command, timeout=None)
-            st.rerun()
+            command_box(
+                command,
+                timeout=None,
+                title="Running pipeline...",
+                transcript_key="pipeline_console",
+            )
 
     st.subheader("Individual Steps")
     steps = [
@@ -450,8 +527,15 @@ def render_pipeline_tab():
     ]
     for label, step_command in steps:
         if st.button(label):
-            command_box(step_command, timeout=None)
-            st.rerun()
+            command_box(
+                step_command,
+                timeout=None,
+                title=f"Running {label.lower()}...",
+                transcript_key="pipeline_console",
+            )
+
+    st.subheader("Live Pipeline Console")
+    render_saved_command_output("pipeline_console")
 
 
 def render_issues_tab():

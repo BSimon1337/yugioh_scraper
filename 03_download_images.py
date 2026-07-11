@@ -59,7 +59,8 @@ def main():
         skipped = 0
         failed = 0
 
-        for row in rows:
+        total = len(rows)
+        for position, row in enumerate(rows, start=1):
             cid = row["cid"]
             ciid = row["ciid"]
             local_path = row["local_path"] or image_path(cid, ciid, IMAGE_DIR)
@@ -68,10 +69,10 @@ def main():
             if destination.exists():
                 skipped += 1
                 update_downloaded_image(connection, cid, ciid, str(destination))
-                print(f"SKIP {cid}_{ciid}: {destination}")
+                print(f"[{position}/{total}] SKIP {cid}_{ciid}: {destination}")
                 continue
 
-            print(f"GET  {cid}_{ciid}: {row['image_url']}")
+            print(f"[{position}/{total}] GET  {cid}_{ciid}: {row['image_url']}")
 
             try:
                 download_image(row["image_url"], destination)
@@ -80,7 +81,7 @@ def main():
                 downloaded += 1
             except Exception as error:
                 failed += 1
-                print(f"FAIL {cid}_{ciid}: {error}")
+                print(f"[{position}/{total}] FAIL {cid}_{ciid}: {error}")
 
         connection.commit()
 

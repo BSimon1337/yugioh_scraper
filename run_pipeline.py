@@ -1,4 +1,5 @@
 import argparse
+import os
 import shutil
 import subprocess
 import sys
@@ -12,10 +13,24 @@ PRINTINGS_CSV = "konami_printings.csv"
 EXPORT_CSV = "carduploader_export.csv"
 
 
-def run(command):
+def unbuffered_command(command):
+    if not command:
+        return command
+    if Path(command[0]).name.lower().startswith("python") and "-u" not in command[1:2]:
+        return [command[0], "-u", *command[1:]]
+    return command
+
+
+def run(command, label=None, step=None, total_steps=None):
+    command = unbuffered_command(command)
     print()
+    if label:
+        prefix = f"[{step}/{total_steps}] " if step and total_steps else ""
+        print(f"{prefix}{label}", flush=True)
     print("$ " + " ".join(command), flush=True)
-    completed = subprocess.run(command)
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+    completed = subprocess.run(command, env=env)
     if completed.returncode != 0:
         raise SystemExit(completed.returncode)
 
@@ -146,11 +161,24 @@ def build_parser():
 def main():
     parser = build_parser()
     args = parser.parse_args()
+    total_steps = 5
+    if args.run_match:
+        total_steps += 1
+    if not args.skip_download:
+        total_steps += 1
+    if args.audit:
+        total_steps += 1
+    step_number = 0
+
+    def run_stage(command, label):
+        nonlocal step_number
+        step_number += 1
+        run(command, label=label, step=step_number, total_steps=total_steps)
 
     copy_source_json(args.from_json)
 
     if args.run_match:
-        run([
+        run_stage([
             sys.executable,
             "01_match_konami.py",
             "--input",
@@ -162,7 +190,7 @@ def main():
             "--delay",
             str(args.match_delay),
             "--merge-csv",
-        ])
+        ], "Match cards to Konami")
 
     ensure_no_card_review(args.interactive_review)
 
@@ -171,14 +199,14 @@ def main():
         pass
     else:
         scrape_command.append("--missing-only")
-    run(scrape_command)
-    run([sys.executable, "02b_enrich_set_names.py"])
+    run_stage(scrape_command, "Scrape printings")
+    run_stage([sys.executable, "02b_enrich_set_names.py"], "Enrich English set names")
 
     if not args.skip_download:
-        run([sys.executable, "03_download_images.py"])
+        run_stage([sys.executable, "03_download_images.py"], "Download images")
 
-    run([sys.executable, "03b_resolve_image_mappings.py", "--all"])
-    run([sys.executable, "04_validate_images.py"])
+    run_stage([sys.executable, "03b_resolve_image_mappings.py", "--all"], "Resolve image mappings")
+    run_stage([sys.executable, "04_validate_images.py"], "Validate images")
 
     export_command = [
         sys.executable,
@@ -194,10 +222,10 @@ def main():
     ]
     if args.image_source == "cdn":
         export_command.extend(["--cdn-base-url", args.cdn_base_url])
-    run(export_command)
+    run_stage(export_command, "Export card uploader CSV")
 
     if args.audit:
-        run([sys.executable, "06_export_image_audit.py"])
+        run_stage([sys.executable, "06_export_image_audit.py"], "Export image audit")
 
     ensure_clean_for_export(args.output)
 
