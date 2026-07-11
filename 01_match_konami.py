@@ -331,7 +331,8 @@ def main():
         if source_status == "Not yet released" and not args.include_unreleased:
             print(
                 f"[{index}/{len(cards_to_test)}] Skipping unreleased: "
-                f"{english_name} / {japanese_name}"
+                f"{english_name} / {japanese_name}",
+                flush=True,
             )
             output_rows.append({
                 "page_title": card["page_title"],
@@ -348,7 +349,10 @@ def main():
             })
             continue
 
-        print(f"[{index}/{len(cards_to_test)}] Searching: {english_name} / {japanese_name}")
+        print(
+            f"[{index}/{len(cards_to_test)}] Searching: {english_name} / {japanese_name}",
+            flush=True,
+        )
 
         try:
             matches = search_konami(search_text, verbose=args.verbose)

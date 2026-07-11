@@ -1,8 +1,10 @@
 import csv
 import importlib
+import re
 import sqlite3
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import streamlit as st
@@ -24,28 +26,63 @@ st.set_page_config(
 )
 
 
-def run_command(command, timeout=None):
-    completed = subprocess.run(
-        command,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=timeout,
-    )
-    return completed.returncode, completed.stdout, completed.stderr
-
-
 def command_box(command, timeout=None):
     with st.status("Running command...", expanded=True) as status:
         st.code(" ".join(command), language="powershell")
-        code, stdout, stderr = run_command(command, timeout=timeout)
-        if stdout:
-            st.text_area("Output", stdout, height=260)
-        if stderr:
-            st.text_area("Errors", stderr, height=160)
+        latest_placeholder = st.empty()
+        progress_bar = st.progress(0, text="Waiting for output...")
+        log_placeholder = st.empty()
+        progress_placeholder = st.empty()
+        output_lines = []
+        started_at = time.monotonic()
 
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+        )
+
+        while process.poll() is None:
+            if timeout and time.monotonic() - started_at > timeout:
+                process.kill()
+                status.update(label="Command timed out", state="error")
+                return 124
+
+            line = process.stdout.readline() if process.stdout else ""
+            if line:
+                output_lines.append(line.rstrip())
+                latest_line = output_lines[-1]
+                latest_placeholder.info(latest_line)
+                log_placeholder.code("\n".join(output_lines[-30:]), language="text")
+                progress_placeholder.caption(f"Showing last {min(len(output_lines), 30)} line(s)")
+
+                match = re.search(r"\[(\d+)/(\d+)\]", latest_line)
+                if match:
+                    current = int(match.group(1))
+                    total = int(match.group(2))
+                    progress = current / total if total else 0
+                    progress_bar.progress(
+                        min(progress, 1.0),
+                        text=f"{current}/{total}",
+                    )
+
+            if not line:
+                time.sleep(0.1)
+
+        if process.stdout:
+            for line in process.stdout.read().splitlines():
+                output_lines.append(line)
+
+        if output_lines:
+            log_placeholder.code("\n".join(output_lines[-120:]), language="text")
+
+        code = process.returncode
         if code == 0:
+            progress_bar.progress(1.0, text="Done")
             status.update(label="Command finished", state="complete")
         else:
             status.update(label=f"Command failed with exit code {code}", state="error")

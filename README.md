@@ -19,7 +19,7 @@ pip install -r requirements.txt
 Launch the optional local UI:
 
 ```powershell
-streamlit run streamlit_app.py
+python -m streamlit run streamlit_app.py --server.enableXsrfProtection=false
 ```
 
 Put the Yugipedia JSON export at:
