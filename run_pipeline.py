@@ -30,6 +30,7 @@ def run(command, label=None, step=None, total_steps=None):
     print("$ " + " ".join(command), flush=True)
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
     completed = subprocess.run(command, env=env)
     if completed.returncode != 0:
         raise SystemExit(completed.returncode)

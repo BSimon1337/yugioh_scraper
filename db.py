@@ -5,9 +5,10 @@ DB_PATH = "yugioh_rush.sqlite3"
 
 
 def connect_db(path=DB_PATH):
-    connection = sqlite3.connect(path)
+    connection = sqlite3.connect(path, timeout=30)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
+    connection.execute("PRAGMA busy_timeout = 30000")
     return connection
 
 
@@ -81,6 +82,22 @@ def init_db(connection):
 
         CREATE INDEX IF NOT EXISTS idx_images_local_path
             ON images(local_path);
+
+        CREATE TABLE IF NOT EXISTS konami_index_cache (
+            cid TEXT PRIMARY KEY,
+            cardname TEXT NOT NULL DEFAULT '',
+            page_title TEXT NOT NULL DEFAULT '',
+            release_date TEXT NOT NULL DEFAULT '',
+            yugipedia_url TEXT NOT NULL DEFAULT '',
+            source_url TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_konami_index_cache_cardname
+            ON konami_index_cache(cardname);
+
+        CREATE INDEX IF NOT EXISTS idx_konami_index_cache_page_title
+            ON konami_index_cache(page_title);
         """
     )
     ensure_columns(

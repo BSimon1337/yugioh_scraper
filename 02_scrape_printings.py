@@ -1,5 +1,6 @@
 import argparse
 import re
+import sys
 import time
 
 import pandas as pd
@@ -47,12 +48,15 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0"
 }
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+
 
 def get_setcode(cardnumber):
     if not cardnumber:
         return ""
 
-    match = re.match(r"(.+)-JP[A-Z0-9]+", cardnumber)
+    match = re.match(r"(.+)-[A-Z]{2}[A-Z0-9]+$", cardnumber)
     return match.group(1) if match else ""
 
 

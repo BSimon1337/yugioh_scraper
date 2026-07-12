@@ -44,13 +44,15 @@ def build_state(db_path, export_csv, report_csv):
         state["errors"].append(f"SQLite database not found: {db_path}")
         return state
 
-    with sqlite3.connect(db_path) as connection:
+    with sqlite3.connect(db_path, timeout=30) as connection:
         connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA busy_timeout = 30000")
 
         state.update({
             "cards": scalar(connection, "SELECT COUNT(*) FROM cards"),
             "matched": scalar(connection, "SELECT COUNT(*) FROM cards WHERE match_status = 'MATCHED'"),
             "no_match": scalar(connection, "SELECT COUNT(*) FROM cards WHERE match_status = 'NO_MATCH'"),
+            "deferred": scalar(connection, "SELECT COUNT(*) FROM cards WHERE match_status = 'DEFERRED'"),
             "unreleased": scalar(connection, "SELECT COUNT(*) FROM cards WHERE match_status = 'UNRELEASED'"),
             "source_duplicate": scalar(
                 connection,
@@ -61,7 +63,7 @@ def build_state(db_path, export_csv, report_csv):
                 """
                 SELECT COUNT(*)
                 FROM cards
-                WHERE match_status NOT IN ('MATCHED', 'NO_MATCH', 'UNRELEASED', 'SOURCE_DUPLICATE')
+                WHERE match_status NOT IN ('MATCHED', 'NO_MATCH', 'DEFERRED', 'UNRELEASED', 'SOURCE_DUPLICATE')
                 """,
             ),
             "printings": scalar(connection, "SELECT COUNT(*) FROM printings"),
@@ -187,6 +189,7 @@ def print_state(state):
     print_count("cards", state["cards"])
     print_count("matched", state["matched"])
     print_count("no_match", state["no_match"])
+    print_count("deferred", state["deferred"])
     print_count("unreleased", state["unreleased"])
     print_count("source_duplicate", state["source_duplicate"])
     print_count("needs_match_review", state["needs_match_review"])

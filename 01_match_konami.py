@@ -136,11 +136,100 @@ def detail_url(cid):
     return f"{KONAMI_SEARCH_URL}?ope=2&cid={cid}"
 
 
+def detail_url_ja(cid):
+    return f"{detail_url(cid)}&request_locale=ja"
+
+
 def normalize_match_text(value):
     value = str(value or "").strip()
     value = re.sub(r"\s+", "", value)
     value = value.replace("－", "-")
     return value
+
+
+def normalize_cache_key(value):
+    value = clean_wiki_name(value)
+    value = str(value or "").strip().casefold()
+    value = value.replace("_", " ")
+    value = re.sub(r"\s+", " ", value)
+    return value
+
+
+def add_cache_index(index, key, row):
+    if not key:
+        return
+    index.setdefault(key, []).append(row)
+
+
+def load_konami_index_cache():
+    cache = {
+        "page_title": {},
+        "cardname": {},
+    }
+
+    with connect_db() as connection:
+        init_db(connection)
+        rows = connection.execute(
+            """
+            SELECT cid, cardname, page_title, release_date, yugipedia_url
+            FROM konami_index_cache
+            ORDER BY CAST(cid AS INTEGER)
+            """
+        ).fetchall()
+
+    for row in rows:
+        row = dict(row)
+        add_cache_index(cache["page_title"], normalize_cache_key(row["page_title"]), row)
+        add_cache_index(cache["cardname"], normalize_cache_key(row["cardname"]), row)
+
+    return cache
+
+
+def unique_cache_hit(rows):
+    rows = rows or []
+    cids = {row["cid"] for row in rows if row.get("cid")}
+    if len(cids) == 1:
+        return rows[0]
+    return None
+
+
+def find_index_cache_match(card, cache):
+    page_key = normalize_cache_key(card.get("page_title"))
+    name_key = normalize_cache_key(card.get("english_name"))
+
+    page_match = unique_cache_hit(cache["page_title"].get(page_key))
+    if page_match:
+        return page_match, "YUGIPEDIA_INDEX_PAGE_TITLE"
+
+    name_match = unique_cache_hit(cache["cardname"].get(name_key))
+    if name_match:
+        return name_match, "YUGIPEDIA_INDEX_CARDNAME"
+
+    return None, ""
+
+
+def verify_detail_page(cid):
+    response = requests.get(detail_url_ja(cid), headers=HEADERS, timeout=20)
+    response.raise_for_status()
+
+    soup = BeautifulSoup(response.text, "html.parser")
+    has_printings = bool(soup.select("#update_list .t_row"))
+    has_images = "get_image.action" in response.text
+    headings = [
+        tag.get_text(" ", strip=True)
+        for tag in soup.select("h1")
+        if tag.get_text(" ", strip=True)
+    ]
+    konami_name = headings[1] if len(headings) > 1 else ""
+
+    if not has_printings and not has_images:
+        raise ValueError(f"Konami detail page did not contain printings/images for cid {cid}")
+
+    return {
+        "cid": str(cid),
+        "konami_name": konami_name,
+        "konami_url": detail_url(cid),
+    }
 
 
 def search_konami(search_text, verbose=False):
@@ -306,6 +395,16 @@ def build_parser():
         action="store_true",
         help="Merge rows into the existing match CSV instead of replacing it.",
     )
+    parser.add_argument(
+        "--no-index-cache",
+        action="store_true",
+        help="Do not use the local Yugipedia Konami index cache before live search.",
+    )
+    parser.add_argument(
+        "--verify-index-cache",
+        action="store_true",
+        help="Verify Yugipedia index cache hits by loading the direct Konami detail page.",
+    )
     return parser
 
 
@@ -320,6 +419,15 @@ def main():
     output_rows = []
 
     cards_to_test = cards if args.limit == 0 else cards[:args.limit]
+    index_cache = None
+    if not args.no_index_cache:
+        try:
+            index_cache = load_konami_index_cache()
+            cache_count = sum(len(rows) for rows in index_cache["page_title"].values())
+            print(f"Loaded {cache_count} Yugipedia Konami index cache row(s).")
+        except Exception as error:
+            index_cache = None
+            print(f"Could not load Yugipedia Konami index cache: {error}")
 
     for index, card in enumerate(cards_to_test, start=1):
         english_name = card["english_name"]
@@ -350,11 +458,51 @@ def main():
             continue
 
         print(
-            f"[{index}/{len(cards_to_test)}] Searching: {english_name} / {japanese_name}",
+            f"[{index}/{len(cards_to_test)}] Matching: {english_name} / {japanese_name}",
             flush=True,
         )
 
         try:
+            cache_match = None
+            cache_method = ""
+            if index_cache:
+                cache_match, cache_method = find_index_cache_match(card, index_cache)
+
+            if cache_match:
+                cid = cache_match["cid"]
+                chosen = {
+                    "cid": cid,
+                    "konami_name": cache_match.get("cardname", ""),
+                    "konami_url": detail_url(cid),
+                }
+                note = (
+                    f"matched from Yugipedia Konami index cache "
+                    f"({cache_method}); release_date={cache_match.get('release_date', '')}"
+                )
+
+                if args.verify_index_cache:
+                    chosen = verify_detail_page(cid)
+                    note += "; direct Konami detail page verified"
+
+                print(f"  Cache hit {cid} via {cache_method}", flush=True)
+                output_rows.append({
+                    "page_title": card["page_title"],
+                    "english_name": english_name,
+                    "japanese_name": japanese_name,
+                    "search_text": search_text,
+                    "source_status": source_status,
+                    "source_file": source_file,
+                    "match_status": "MATCHED",
+                    "konami_cid": chosen["cid"],
+                    "konami_name": chosen["konami_name"],
+                    "konami_url": chosen["konami_url"],
+                    "notes": note,
+                })
+                if args.verify_index_cache and args.delay > 0:
+                    time.sleep(args.delay)
+                continue
+
+            print("  Cache miss; searching Konami", flush=True)
             matches = search_konami(search_text, verbose=args.verbose)
             match_status, chosen = choose_match(matches, search_text)
             exact_note = ""

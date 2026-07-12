@@ -147,7 +147,7 @@ def get_text(parent, selector):
 
 
 def fetch_review_rows(connection, statuses=None):
-    where = "match_status NOT IN ('MATCHED', 'UNRELEASED', 'SOURCE_DUPLICATE')"
+    where = "match_status NOT IN ('MATCHED', 'UNRELEASED', 'SOURCE_DUPLICATE', 'DEFERRED')"
     params = []
 
     if statuses:
@@ -412,6 +412,8 @@ def selected_statuses(args):
         return ["REVIEW_MULTIPLE", "REVIEW"]
     if args.status == "no-match":
         return ["NO_MATCH"]
+    if args.status == "deferred":
+        return ["DEFERRED"]
     if args.status == "unreleased":
         return ["UNRELEASED"]
     if args.status == "source-duplicate":
@@ -470,6 +472,20 @@ def run_no_match(args):
     print(f"Updated {args.page_title}: NO_MATCH")
 
 
+def run_defer(args):
+    notes = args.notes or "manual review: skipped for later"
+
+    with connect_db() as connection:
+        init_db(connection)
+        row = fetch_card(connection, args.page_title)
+        if not row:
+            raise SystemExit(f"No card found for page title: {args.page_title}")
+
+        update_card(connection, args.page_title, "", "DEFERRED", "", notes)
+
+    print(f"Updated {args.page_title}: DEFERRED")
+
+
 def run_source_duplicate(args):
     notes = args.notes or "manual review: source duplicate"
 
@@ -517,13 +533,24 @@ def run_interactive(args):
                 known_names_by_cid=known_names_by_cid,
             )
             print()
-            choice = input("Choose candidate number/CID/URL, n = NO_MATCH, s = skip, q = quit: ")
+            choice = input("Choose candidate number/CID/URL, n = NO_MATCH, s = skip for later, q = quit: ")
             choice = choice.strip()
             command_choice = choice.lower()
 
             if command_choice == "q":
                 break
-            if command_choice == "s" or not choice:
+            if not choice:
+                continue
+            if command_choice == "s":
+                update_card(
+                    connection,
+                    row["page_title"],
+                    "",
+                    "DEFERRED",
+                    "",
+                    "manual review: skipped for later",
+                )
+                print(f"Updated {row['page_title']}: DEFERRED")
                 continue
             if command_choice == "n":
                 update_card(
@@ -599,6 +626,14 @@ def build_parser():
     no_match_parser.add_argument("--notes", default="", help="Override review note.")
     no_match_parser.set_defaults(func=run_no_match)
 
+    defer_parser = subparsers.add_parser(
+        "defer",
+        help="Mark one page title as DEFERRED/skipped for later.",
+    )
+    defer_parser.add_argument("page_title")
+    defer_parser.add_argument("--notes", default="", help="Override review note.")
+    defer_parser.set_defaults(func=run_defer)
+
     source_duplicate_parser = subparsers.add_parser(
         "source-duplicate",
         help="Mark one page title as a source duplicate/alias of an existing matched CID.",
@@ -624,7 +659,7 @@ def build_parser():
     )
     interactive_parser.add_argument(
         "--status",
-        choices=["all", "review", "no-match", "unreleased", "source-duplicate"],
+        choices=["all", "review", "no-match", "deferred", "unreleased", "source-duplicate"],
         default="all",
         help="Which rows to review. Defaults to all non-matched rows.",
     )

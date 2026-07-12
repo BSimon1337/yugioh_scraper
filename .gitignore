@@ -8,6 +8,7 @@ batches/
 result*.json
 konami_matches.csv
 konami_printings.csv
+konami_index_cache.csv
 carduploader_export*.csv
 image_mapping_audit.csv
 image_validation_report.csv

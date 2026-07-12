@@ -1,10 +1,12 @@
 import csv
+import os
 import importlib
 import re
 import sqlite3
 import subprocess
 import sys
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import streamlit as st
@@ -45,10 +47,15 @@ def command_box(command, timeout=None, title="Running command...", transcript_ke
         latest_placeholder = st.empty()
         state_placeholder = st.empty()
         progress_bar = st.progress(0, text="Waiting for output...")
+        eta_placeholder = st.empty()
         log_placeholder = st.empty()
         progress_placeholder = st.empty()
         started_at = time.monotonic()
         last_state_at = 0
+
+        env = os.environ.copy()
+        env["PYTHONUNBUFFERED"] = "1"
+        env["PYTHONIOENCODING"] = "utf-8"
 
         process = subprocess.Popen(
             command,
@@ -58,6 +65,7 @@ def command_box(command, timeout=None, title="Running command...", transcript_ke
             encoding="utf-8",
             errors="replace",
             bufsize=1,
+            env=env,
         )
 
         while process.poll() is None:
@@ -86,9 +94,20 @@ def command_box(command, timeout=None, title="Running command...", transcript_ke
                     current = int(match.group(1))
                     total = int(match.group(2))
                     progress = current / total if total else 0
+                    elapsed = time.monotonic() - started_at
+                    average_seconds = elapsed / current if current else 0
+                    remaining = max(total - current, 0)
+                    eta_seconds = remaining * average_seconds
+                    finish_at = datetime.now() + timedelta(seconds=eta_seconds)
                     progress_bar.progress(
                         min(progress, 1.0),
                         text=f"{current}/{total}",
+                    )
+                    eta_placeholder.caption(
+                        "ETA: "
+                        f"{format_duration(eta_seconds)} remaining | "
+                        f"est. finish {finish_at.strftime('%I:%M %p').lstrip('0')} | "
+                        f"{average_seconds:.1f}s/item"
                     )
 
             if transcript_key == "pipeline_console" and time.monotonic() - last_state_at >= 5:
@@ -167,7 +186,30 @@ def query_rows(query, params=()):
 
 
 def state_summary():
-    return build_state(DB_PATH, EXPORT_CSV, REPORT_CSV)
+    try:
+        return build_state(DB_PATH, EXPORT_CSV, REPORT_CSV)
+    except sqlite3.OperationalError as error:
+        if "database is locked" in str(error).lower():
+            return {
+                "errors": [
+                    "SQLite is busy because another pipeline step is writing. "
+                    "Refresh again in a moment."
+                ],
+                "warnings": [],
+            }
+        raise
+
+
+def format_duration(seconds):
+    seconds = max(int(seconds), 0)
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+
+    if hours:
+        return f"{hours}h {minutes}m"
+    if minutes:
+        return f"{minutes}m {seconds}s"
+    return f"{seconds}s"
 
 
 def render_health():
@@ -181,6 +223,7 @@ def render_health():
         ("Matched", "matched"),
         ("Needs Review", "needs_match_review"),
         ("No Match", "no_match"),
+        ("Deferred", "deferred"),
         ("Unreleased", "unreleased"),
         ("Source Dupes", "source_duplicate"),
         ("Printings", "printings"),
@@ -250,13 +293,31 @@ def match_json_files(paths, delay, limit, include_unreleased):
     return True
 
 
+def konami_index_cache_summary():
+    if not db_exists():
+        return {"rows": 0, "updated_at": ""}
+
+    with connect_db() as connection:
+        init_db(connection)
+        row = connection.execute(
+            """
+            SELECT COUNT(*) AS rows,
+                   COALESCE(MAX(updated_at), '') AS updated_at
+            FROM konami_index_cache
+            """
+        ).fetchone()
+
+    return dict(row)
+
+
 def review_rows(status_filter):
-    where = "match_status NOT IN ('MATCHED', 'UNRELEASED', 'SOURCE_DUPLICATE')"
+    where = "match_status NOT IN ('MATCHED', 'UNRELEASED', 'SOURCE_DUPLICATE', 'DEFERRED')"
     params = []
     if status_filter != "all":
         status_map = {
             "review": ["REVIEW_MULTIPLE", "REVIEW", "ERROR"],
             "no-match": ["NO_MATCH"],
+            "deferred": ["DEFERRED"],
             "unreleased": ["UNRELEASED"],
             "source-duplicate": ["SOURCE_DUPLICATE"],
         }
@@ -308,6 +369,16 @@ def apply_review_action(page_title, action, cid_or_url="", notes=""):
             notes or "manual review: no Konami match",
         ], timeout=60)
 
+    if action == "defer":
+        return command_box([
+            sys.executable,
+            "01b_review_matches.py",
+            "defer",
+            page_title,
+            "--notes",
+            notes or "manual review: skipped for later",
+        ], timeout=60)
+
     if action == "source-duplicate":
         return command_box([
             sys.executable,
@@ -319,6 +390,24 @@ def apply_review_action(page_title, action, cid_or_url="", notes=""):
         ], timeout=60)
 
     return 1
+
+
+def cards_for_cid(cid):
+    return query_rows(
+        """
+        SELECT page_title,
+               english_name,
+               japanese_name,
+               match_status,
+               cid,
+               konami_name,
+               notes
+        FROM cards
+        WHERE cid = ?
+        ORDER BY english_name, page_title
+        """,
+        (cid,),
+    )
 
 
 def candidate_rows(row):
@@ -370,6 +459,26 @@ def render_import_tab():
     st.subheader("Import And Match JSON Batches")
     st.caption("Upload one or more Yugipedia JSON result files, or paste local paths. Matching merges into SQLite and konami_matches.csv.")
 
+    st.write("Yugipedia CID Index")
+    cache_summary = konami_index_cache_summary()
+    cache_col1, cache_col2, cache_col3 = st.columns([1, 1, 2])
+    cache_col1.metric("Cached CIDs", cache_summary.get("rows", 0))
+    cache_col2.write(f"Updated: {cache_summary.get('updated_at') or 'never'}")
+    if cache_col3.button("Refresh Yugipedia CID Index", use_container_width=True):
+        command_box(
+            [sys.executable, "00_update_konami_index_cache.py"],
+            timeout=None,
+            title="Refreshing Yugipedia CID index...",
+        )
+
+    st.write("Yugipedia JSON Batches")
+    if st.button("Download Rush Duel JSON Batches", use_container_width=True):
+        command_box(
+            [sys.executable, "00_download_yugipedia_batches.py", "--output-dir", str(BATCH_DIR)],
+            timeout=None,
+            title="Downloading Yugipedia Rush Duel JSON batches...",
+        )
+
     uploaded_files = st.file_uploader(
         "Upload JSON files",
         type=["json"],
@@ -379,6 +488,7 @@ def render_import_tab():
         "Or paste JSON file paths, one per line",
         placeholder=r"C:\Users\Beau\Downloads\result (1).json",
     )
+    use_downloaded_batches = st.checkbox("Use downloaded batches folder", value=False)
 
     col1, col2, col3 = st.columns(3)
     delay = col1.number_input("Match delay seconds", min_value=0.0, value=0.5, step=0.1)
@@ -389,6 +499,8 @@ def render_import_tab():
         paths = []
         if uploaded_files:
             paths.extend(save_uploads(uploaded_files))
+        if use_downloaded_batches:
+            paths.extend(sorted(BATCH_DIR.glob("*.json")))
         paths.extend(Path(line.strip()) for line in path_text.splitlines() if line.strip())
 
         if not paths:
@@ -409,9 +521,16 @@ def render_review_tab():
         st.info("Run matching first.")
         return
 
+    if st.session_state.get("review_notice"):
+        notice = st.session_state.pop("review_notice")
+        if notice.get("type") == "success":
+            st.success(notice["message"])
+        else:
+            st.error(notice["message"])
+
     status_filter = st.selectbox(
         "Status",
-        ["all", "review", "no-match", "unreleased", "source-duplicate"],
+        ["all", "review", "no-match", "deferred", "unreleased", "source-duplicate"],
     )
     rows = review_rows(status_filter)
     st.write(f"{len(rows)} row(s)")
@@ -462,22 +581,54 @@ def render_review_tab():
 
     cid_or_url = st.text_input("CID or Konami URL", key="review_cid_or_url")
     notes = st.text_input("Notes", value="manual review", key="review_notes")
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     if col1.button("Match", type="primary", use_container_width=True):
         if not cid_or_url.strip():
             st.warning("Enter a CID or Konami URL.")
         else:
-            apply_review_action(row["page_title"], "match", cid_or_url=cid_or_url.strip(), notes=notes)
-            st.session_state["clear_review_inputs"] = True
-            st.rerun()
+            code = apply_review_action(row["page_title"], "match", cid_or_url=cid_or_url.strip(), notes=notes)
+            if code == 0:
+                st.session_state["clear_review_inputs"] = True
+                st.session_state["review_notice"] = {
+                    "type": "success",
+                    "message": f"Matched {row['page_title']}.",
+                }
+                st.rerun()
+            else:
+                st.error("Match command failed. Check the command output above.")
     if col2.button("No Match", use_container_width=True):
-        apply_review_action(row["page_title"], "no-match", notes=notes)
-        st.session_state["clear_review_inputs"] = True
-        st.rerun()
-    if col3.button("Source Duplicate", use_container_width=True):
-        apply_review_action(row["page_title"], "source-duplicate", notes=notes)
-        st.session_state["clear_review_inputs"] = True
-        st.rerun()
+        code = apply_review_action(row["page_title"], "no-match", notes=notes)
+        if code == 0:
+            st.session_state["clear_review_inputs"] = True
+            st.session_state["review_notice"] = {
+                "type": "success",
+                "message": f"Marked {row['page_title']} as NO_MATCH.",
+            }
+            st.rerun()
+        else:
+            st.error("No Match command failed. Check the command output above.")
+    if col3.button("Skip For Later", use_container_width=True):
+        code = apply_review_action(row["page_title"], "defer", notes=notes)
+        if code == 0:
+            st.session_state["clear_review_inputs"] = True
+            st.session_state["review_notice"] = {
+                "type": "success",
+                "message": f"Skipped {row['page_title']} for later.",
+            }
+            st.rerun()
+        else:
+            st.error("Skip command failed. Check the command output above.")
+    if col4.button("Source Duplicate", use_container_width=True):
+        code = apply_review_action(row["page_title"], "source-duplicate", notes=notes)
+        if code == 0:
+            st.session_state["clear_review_inputs"] = True
+            st.session_state["review_notice"] = {
+                "type": "success",
+                "message": f"Marked {row['page_title']} as SOURCE_DUPLICATE.",
+            }
+            st.rerun()
+        else:
+            st.error("Source Duplicate command failed. Check the command output above.")
 
 
 def render_pipeline_tab():
@@ -550,6 +701,79 @@ def render_issues_tab():
     duplicate_cids = [dict(row) for row in state.get("duplicate_cids", [])]
     if duplicate_cids:
         st.dataframe(duplicate_cids, use_container_width=True)
+
+        st.write("Resolve Duplicate CID")
+        cid_options = [row["cid"] for row in duplicate_cids]
+        selected_cid = st.selectbox(
+            "Duplicate CID",
+            cid_options,
+            format_func=lambda cid: next(
+                f"{row['cid']} | {row['names']}"
+                for row in duplicate_cids
+                if row["cid"] == cid
+            ),
+        )
+        duplicate_rows = cards_for_cid(selected_cid)
+        st.dataframe(duplicate_rows, use_container_width=True, hide_index=True)
+
+        if duplicate_rows:
+            row_options = list(range(len(duplicate_rows)))
+            selected_index = st.selectbox(
+                "Card row to update",
+                row_options,
+                format_func=lambda index: (
+                    f"{duplicate_rows[index]['english_name']} "
+                    f"({duplicate_rows[index]['page_title']})"
+                ),
+            )
+            selected_row = duplicate_rows[selected_index]
+            new_cid = st.text_input(
+                "Replacement CID or Konami URL",
+                key=f"duplicate-replacement-{selected_cid}",
+            )
+            notes = st.text_input(
+                "Issue notes",
+                value="duplicate CID cleanup",
+                key=f"duplicate-notes-{selected_cid}",
+            )
+            col1, col2, col3 = st.columns(3)
+            if col1.button("Update Match", use_container_width=True):
+                if not new_cid.strip():
+                    st.warning("Enter a replacement CID or Konami URL.")
+                else:
+                    code = apply_review_action(
+                        selected_row["page_title"],
+                        "match",
+                        cid_or_url=new_cid.strip(),
+                        notes=notes,
+                    )
+                    if code == 0:
+                        st.success(f"Updated {selected_row['page_title']}.")
+                        st.rerun()
+                    else:
+                        st.error("Update Match failed. Check command output above.")
+            if col2.button("Source Duplicate", use_container_width=True):
+                code = apply_review_action(
+                    selected_row["page_title"],
+                    "source-duplicate",
+                    notes=notes or "duplicate CID cleanup: source duplicate",
+                )
+                if code == 0:
+                    st.success(f"Marked {selected_row['page_title']} as SOURCE_DUPLICATE.")
+                    st.rerun()
+                else:
+                    st.error("Source Duplicate failed. Check command output above.")
+            if col3.button("Skip For Later", use_container_width=True):
+                code = apply_review_action(
+                    selected_row["page_title"],
+                    "defer",
+                    notes=notes or "duplicate CID cleanup: skipped for later",
+                )
+                if code == 0:
+                    st.success(f"Deferred {selected_row['page_title']}.")
+                    st.rerun()
+                else:
+                    st.error("Skip For Later failed. Check command output above.")
     else:
         st.success("No duplicate matched CIDs.")
 

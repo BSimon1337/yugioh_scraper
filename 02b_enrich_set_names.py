@@ -1,4 +1,5 @@
 import argparse
+import csv
 import importlib
 import re
 import sys
@@ -11,6 +12,7 @@ from bs4 import BeautifulSoup
 from db import connect_db, init_db
 
 YUGIPEDIA_API_URL = "https://yugipedia.com/api.php"
+SET_NAME_MAP_CSV = "set_name_map.csv"
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0",
@@ -152,6 +154,41 @@ def update_set_names(connection, cid, set_rows):
     return updated
 
 
+def apply_set_name_map(connection, path):
+    path = str(path or "").strip()
+    if not path:
+        return 0
+
+    try:
+        file = open(path, "r", encoding="utf-8-sig", newline="")
+    except FileNotFoundError:
+        return 0
+
+    updated = 0
+    with file:
+        for row in csv.DictReader(file):
+            setcode = (row.get("setcode") or "").strip()
+            setname = (row.get("setname") or "").strip()
+            setname_en = (row.get("setname_en") or "").strip()
+            if not setcode or not setname or not setname_en:
+                continue
+
+            cursor = connection.execute(
+                """
+                UPDATE printings
+                SET setname_en = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE setcode = ?
+                  AND setname = ?
+                  AND setname_en = ''
+                """,
+                (setname_en, setcode, setname),
+            )
+            updated += cursor.rowcount
+
+    return updated
+
+
 def missing_set_name_count(connection):
     return connection.execute(
         """
@@ -190,6 +227,11 @@ def build_parser():
         action="store_true",
         help="Do not rewrite konami_printings.csv after updating SQLite.",
     )
+    parser.add_argument(
+        "--set-name-map",
+        default=SET_NAME_MAP_CSV,
+        help=f"Optional setcode,setname,setname_en CSV to apply after page enrichment. Defaults to {SET_NAME_MAP_CSV}.",
+    )
     return parser
 
 
@@ -221,6 +263,10 @@ def main():
             if args.delay > 0:
                 time.sleep(args.delay)
 
+        mapped = apply_set_name_map(connection, args.set_name_map)
+        if mapped:
+            connection.commit()
+
         remaining = missing_set_name_count(connection)
 
     synced = 0
@@ -228,6 +274,7 @@ def main():
         synced = sync_printings_csv()
 
     print(f"Updated {total_updated} printing row(s).")
+    print(f"Applied {mapped} set name map row(s).")
     print(f"Missing English set names: {remaining}.")
     print(f"Failed page(s): {failed}.")
     if not args.no_sync_csv:

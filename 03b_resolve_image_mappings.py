@@ -379,7 +379,17 @@ def main():
 
         print(f"Resolving {len(printings)} printing row(s).")
 
-        for printing in printings:
+        total = len(printings)
+        for position, printing in enumerate(printings, start=1):
+            if position == 1 or position == total or position % 100 == 0:
+                print(
+                    f"[{position}/{total}] Resolving cid {printing['cid']} "
+                    f"{printing['cardnumber']} {printing['rarity']}",
+                    flush=True,
+                )
+                if position > 1:
+                    connection.commit()
+
             pid = printing["pid"]
             if pid not in cache:
                 cache[pid] = fetch_pack_candidates(pid)
